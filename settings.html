@@ -1,34 +1,18 @@
 <div id="payload_spy_settings" class="payload-spy-settings">
-    <div class="inline-drawer">
-        <div class="inline-drawer-toggle inline-drawer-header">
-            <b>Payload Spy</b>
-            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-        </div>
-        <div class="inline-drawer-content">
-            <small class="ps-hint">
-                Показывает, что реально уходит в запрос Chat Completion, и сколько токенов насчитал прокси.
-            </small>
+    <h3>Payload Spy</h3>
+    <label class="checkbox_label">
+        <input id="ps_enabled" type="checkbox" />
+        Перехватывать запросы генерации
+    </label>
+    <small class="ps-hint">Анализирует JSON перед отправкой и usage из ответа. Запрос передаётся дальше без изменения.</small>
 
-            <label class="checkbox_label" for="ps_enabled">
-                <input id="ps_enabled" type="checkbox" />
-                <span>Перехватывать запросы</span>
-            </label>
+    <label class="checkbox_label">
+        <input id="ps_toast" type="checkbox" />
+        Показывать уведомление после запроса
+    </label>
 
-            <label class="checkbox_label" for="ps_toast">
-                <input id="ps_toast" type="checkbox" />
-                <span>Показывать тост после каждой генерации</span>
-            </label>
-
-            <div class="ps-buttons">
-                <div id="ps_open" class="menu_button menu_button_icon">
-                    <i class="fa-solid fa-magnifying-glass"></i>
-                    <span>Последний запрос</span>
-                </div>
-                <div id="ps_clear" class="menu_button menu_button_icon">
-                    <i class="fa-solid fa-trash-can"></i>
-                    <span>Очистить историю</span>
-                </div>
-            </div>
-        </div>
+    <div class="ps-buttons">
+        <button id="ps_open" class="menu_button">Открыть последний отчёт</button>
+        <button id="ps_clear" class="menu_button">Очистить историю</button>
     </div>
 </div>

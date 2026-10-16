@@ -7,7 +7,7 @@
 const MODULE = 'payload_spy';
 const TAG = '[Payload Spy]';
 const GEN_URL = '/api/backends/chat-completions/generate';
-const HISTORY_MAX = 10;
+const HISTORY_MAX = 20;
 const DEFAULTS = Object.freeze({ enabled: true, toast: true });
 
 // Папка расширения берётся из URL, чтобы шаблон находился при любом имени репозитория.
@@ -59,9 +59,27 @@ function textOf(content) {
 }
 
 function hash(str) {
-    let h = 5381;
-    for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
-    return h;
+    // FNV-1a 32-bit: fast fingerprint only; exact text is also checked below.
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(16);
+}
+
+function utf8Bytes(str) {
+    try { return new TextEncoder().encode(str).length; }
+    catch { return str.length; }
+}
+
+function countMatches(text, regex) {
+    return [...text.matchAll(regex)].length;
+}
+
+function normalizeContentForDuplicate(message) {
+    try { return JSON.stringify({ role: message?.role ?? '?', content: message?.content ?? null }); }
+    catch { return String(message?.content ?? ''); }
 }
 
 function downloadJson(data, filename) {
@@ -87,10 +105,17 @@ function analyze(body, bodyChars) {
             role: m?.role ?? '?',
             text,
             chars: text.length,
-            think: /<think>/i.test(text),
-            html: /<\/?(div|details|summary|style|span|img|svg|table|section)\b/i.test(text),
-            figSp: (text.match(/\u2007/g) || []).length,
-            images: parts.filter((p) => p?.type === 'image_url' || p?.type === 'image').length,
+            codePoints: [...text].length,
+            think: /<\s*think\b/i.test(text),
+            html: /<\s*(!doctype|html|head|body|script|iframe|div|details|summary|style|span|img|svg|table|section|p|br|ul|ol|li|a|pre|code)\b/i.test(text),
+            figSp: countMatches(text, /\u2007/g),
+            specialSpaces: {
+                nbsp: countMatches(text, /\u00a0/g),
+                narrowNbsp: countMatches(text, /\u202f/g),
+                thin: countMatches(text, /\u2009/g),
+                zeroWidth: countMatches(text, /[\u200b\u200c\u200d\ufeff]/g),
+            },
+            images: parts.filter((p) => ['image_url', 'image', 'input_image'].includes(p?.type)).length,
         };
     });
 
@@ -102,12 +127,18 @@ function analyze(body, bodyChars) {
     }
 
     const seen = new Map();
-    for (const r of rows) {
-        if (r.chars < 200) continue;
-        const key = `${r.chars}:${hash(r.text)}`;
-        seen.set(key, [...(seen.get(key) ?? []), r.i]);
+    for (const [i, message] of messages.entries()) {
+        const normalized = normalizeContentForDuplicate(message);
+        const text = rows[i]?.text ?? '';
+        if (text.length < 200) continue;
+        const key = `${normalized.length}:${hash(normalized)}`;
+        const bucket = seen.get(key) ?? [];
+        const exact = bucket.find((entry) => entry.normalized === normalized);
+        if (exact) exact.indices.push(i);
+        else bucket.push({ normalized, indices: [i] });
+        seen.set(key, bucket);
     }
-    const dups = [...seen.values()].filter((a) => a.length > 1);
+    const dups = [...seen.values()].flatMap((bucket) => bucket.filter((entry) => entry.indices.length > 1).map((entry) => entry.indices));
 
     const extraKeys = Object.entries(body)
         .filter(([k]) => k !== 'messages')
@@ -127,6 +158,7 @@ function analyze(body, bodyChars) {
         model: body.model ?? '?',
         source: body.chat_completion_source ?? '?',
         bodyChars,
+        bodyBytes: typeof bodyChars === 'number' ? null : null,
         n: rows.length,
         totalChars: rows.reduce((a, r) => a + r.chars, 0),
         rows,
@@ -138,6 +170,12 @@ function analyze(body, bodyChars) {
         thinkCount: rows.filter((r) => r.think).length,
         htmlCount: rows.filter((r) => r.html).length,
         figSp: rows.reduce((a, r) => a + r.figSp, 0),
+        specialSpaces: rows.reduce((a, r) => ({
+            nbsp: a.nbsp + r.specialSpaces.nbsp,
+            narrowNbsp: a.narrowNbsp + r.specialSpaces.narrowNbsp,
+            thin: a.thin + r.specialSpaces.thin,
+            zeroWidth: a.zeroWidth + r.specialSpaces.zeroWidth,
+        }), { nbsp: 0, narrowNbsp: 0, thin: 0, zeroWidth: 0 }),
         images: rows.reduce((a, r) => a + r.images, 0),
         body,
         usage: null,
@@ -147,41 +185,63 @@ function analyze(body, bodyChars) {
 }
 
 /** Приводит usage из разных форматов (OpenAI / Anthropic / Gemini) к одному виду. */
+function validCount(value) {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+    if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
+    return null;
+}
+
 function normUsage(u) {
     if (!u || typeof u !== 'object') return null;
-    const prompt = u.prompt_tokens ?? u.input_tokens ?? u.promptTokenCount ?? null;
-    const completion = u.completion_tokens ?? u.output_tokens ?? u.candidatesTokenCount ?? null;
-    const reasoning = u.completion_tokens_details?.reasoning_tokens ?? u.reasoning_tokens ?? u.thoughtsTokenCount ?? null;
-    const cached = u.prompt_tokens_details?.cached_tokens ?? u.cachedContentTokenCount ?? null;
-    if (prompt === null && completion === null) return null;
+    const prompt = validCount(u.prompt_tokens ?? u.input_tokens ?? u.promptTokenCount ?? u.inputTokenCount);
+    const completion = validCount(u.completion_tokens ?? u.output_tokens ?? u.candidatesTokenCount ?? u.outputTokenCount);
+    const reasoning = validCount(u.completion_tokens_details?.reasoning_tokens ?? u.reasoning_tokens ?? u.thoughtsTokenCount);
+    const cached = validCount(u.prompt_tokens_details?.cached_tokens ?? u.cachedContentTokenCount);
+    if (prompt === null && completion === null && reasoning === null) return null;
     return { prompt, completion, reasoning, cached, raw: u };
 }
 
 function parseUsage(text) {
+    // First try a normal JSON response.
     try {
         const json = JSON.parse(text);
-        const found = normUsage(json?.usage ?? json?.usageMetadata);
+        const found = normUsage(json?.usage ?? json?.usageMetadata ?? json?.response?.usage);
         if (found) return found;
-    } catch { /* не JSON, возможно SSE-стрим */ }
+    } catch { /* likely SSE or a non-JSON response */ }
 
-    const grab = (names) => {
-        for (const name of names) {
-            const all = [...text.matchAll(new RegExp(`"${name}"\\s*:\\s*(\\d+)`, 'g'))];
-            if (all.length) return Number(all[all.length - 1][1]);
-        }
-        return null;
-    };
-    const prompt = grab(['prompt_tokens', 'input_tokens', 'promptTokenCount']);
-    const completion = grab(['completion_tokens', 'output_tokens', 'candidatesTokenCount']);
-    const reasoning = grab(['reasoning_tokens', 'thoughtsTokenCount']);
-    if (prompt === null && completion === null) return null;
-    return { prompt, completion, reasoning, cached: null, raw: { from: 'stream' } };
+    // SSE: parse each data event independently and prefer the last event that actually has usage.
+    const events = [];
+    for (const line of text.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const data = trimmed.slice(5).trim();
+        if (!data || data === '[DONE]') continue;
+        try {
+            const json = JSON.parse(data);
+            const usage = normUsage(json?.usage ?? json?.usageMetadata ?? json?.response?.usage);
+            if (usage) events.push(usage);
+        } catch { /* ignore non-JSON SSE event */ }
+    }
+    if (events.length) return { ...events[events.length - 1], raw: { from: 'sse-final-event', eventCountWithUsage: events.length, usage: events[events.length - 1].raw } };
+
+    // Fallback for proxy formats that embed usage keys in arbitrary JSON text.
+    // Take the last valid object containing usage, rather than mixing independent fields across events.
+    const candidates = [...text.matchAll(/\{[^{}]*\b(?:prompt_tokens|input_tokens|promptTokenCount|completion_tokens|output_tokens|candidatesTokenCount)\b[^{}]*\}/gs)];
+    for (let i = candidates.length - 1; i >= 0; i--) {
+        try {
+            const obj = JSON.parse(candidates[i][0]);
+            const usage = normUsage(obj.usage ?? obj.usageMetadata ?? obj);
+            if (usage) return { ...usage, raw: { from: 'embedded-json', usage: usage.raw } };
+        } catch { /* continue */ }
+    }
+    return null;
 }
 
 async function countWithST(report) {
     const { getTokenCountAsync } = SillyTavern.getContext();
     if (typeof getTokenCountAsync !== 'function') return null;
-    const joined = report.rows.map((r) => r.text).join('\n');
+    // This is only a text-only estimate, not a reproduction of the provider's full prompt format.
+    const joined = report.rows.map((r) => `${r.role}: ${r.text}`).join('\n');
     try {
         return await Promise.race([
             getTokenCountAsync(joined),
@@ -199,7 +259,9 @@ async function finish(report, response) {
     try {
         report.status = response.status;
         const text = await response.clone().text();
+        report.responseTextLength = text.length;
         report.usage = parseUsage(text);
+        report.usageComparable = response.ok && report.usage !== null;
     } catch (e) {
         console.debug(TAG, 'usage not read', e);
     }
@@ -222,26 +284,51 @@ function notify(report) {
     }
 }
 
+async function readRequestBody(input, init) {
+    if (init && Object.prototype.hasOwnProperty.call(init, 'body') && init.body != null) {
+        const body = init.body;
+        if (typeof body === 'string') return body;
+        if (body instanceof URLSearchParams) return body.toString();
+        if (body instanceof Blob) return await body.text();
+        // FormData/streams are not JSON; avoid consuming or changing them.
+        try { return JSON.stringify(body); } catch { return null; }
+    }
+    if (typeof Request !== 'undefined' && input instanceof Request) {
+        try { return await input.clone().text(); } catch { return null; }
+    }
+    return null;
+}
+
 function installFetchSpy() {
     if (window.fetch.__payloadSpy) return;
 
     const origFetch = window.fetch.bind(window);
-
     const spy = async function (input, init) {
         let report = null;
         try {
             const url = typeof input === 'string' ? input : (input?.url ?? String(input));
-            if (url.includes(GEN_URL) && typeof init?.body === 'string' && getSettings().enabled) {
-                report = analyze(JSON.parse(init.body), init.body.length);
-                lastReport = report;
-                history.unshift(report);
-                history.length = Math.min(history.length, HISTORY_MAX);
+            if (url.includes(GEN_URL) && getSettings().enabled) {
+                const rawBody = await readRequestBody(input, init);
+                if (typeof rawBody === 'string') {
+                    const parsed = JSON.parse(rawBody);
+                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        report = analyze(parsed, rawBody.length);
+                        report.bodyBytes = utf8Bytes(rawBody);
+                        report.requestUrl = url;
+                        report.requestMethod = init?.method ?? input?.method ?? 'GET';
+                        report.payloadHash = hash(rawBody);
+                        lastReport = report;
+                        history.unshift(report);
+                        history.length = Math.min(history.length, HISTORY_MAX);
+                    }
+                }
             }
         } catch (e) {
             console.warn(TAG, 'analyze failed, request goes through untouched', e);
             report = null;
         }
 
+        // Pass the original arguments unchanged to the real fetch.
         const response = await origFetch(input, init);
         if (report) finish(report, response).catch((e) => console.warn(TAG, e));
         return response;
@@ -254,7 +341,7 @@ function installFetchSpy() {
 
 function buildHtml(r) {
     const u = r.usage;
-    const ratio = u?.prompt != null && r.stTokens ? u.prompt / r.stTokens : null;
+    const ratio = u?.prompt != null && r.stTokens != null && r.stTokens > 0 ? u.prompt / r.stTokens : null;
 
     const row = (label, value, cls = '') =>
         `<tr><td>${label}</td><td class="ps-val ${cls}">${value}</td></tr>`;
@@ -288,9 +375,7 @@ function buildHtml(r) {
 
     let verdict = '';
     if (ratio !== null) {
-        verdict = ratio > 1.15
-            ? `Прокси насчитал в <b class="ps-warn">${ratio.toFixed(2)}×</b> больше, чем токенайзер ST по тому же payload. Лишнее считает прокси или бэкенд.`
-            : `Прокси и токенайзер ST сходятся (<b class="ps-ok">${ratio.toFixed(2)}×</b>). Значит, раздут сам payload, смотри топ жирных сообщений и флаги выше.`;
+        verdict = `Отношение usage/input к текстовой оценке ST: <b class="${ratio > 1.15 ? 'ps-warn' : 'ps-ok'}">${ratio.toFixed(2)}×</b>. Это не доказательство завышения: оценка ST не включает гарантированно служебные токены, tools и мультимодальные данные.`;
     }
 
     const dupText = r.dups.length ? r.dups.map((a) => '#' + a.join(', #')).join(' | ') : 'нет';
@@ -302,8 +387,10 @@ function buildHtml(r) {
 <table>
 ${row('Сообщений в запросе', fmt(r.n))}
 ${row('Символов в сообщениях', fmt(r.totalChars))}
-${row('Размер всего body', `${fmt(r.bodyChars)} симв`)}
-${row('Токенайзер ST по payload', fmt(r.stTokens))}
+${row('Размер body (JS-строка)', `${fmt(r.bodyChars)} UTF-16 units`)}
+${row('Размер body (UTF-8)', r.bodyBytes == null ? '—' : `${fmt(r.bodyBytes)} байт`)}
+${row('Хеш payload', esc(r.payloadHash ?? '—'))}
+${row('Токенайзер ST (оценка только по тексту)', fmt(r.stTokens))}
 </table>
 
 <h4>Ответ прокси (usage)</h4>
@@ -321,7 +408,9 @@ ${verdict ? `<div class="ps-verdict">${verdict}</div>` : ''}
 ${row('Сообщений с &lt;think&gt;', fmt(r.thinkCount), r.thinkCount ? 'ps-warn' : '')}
 ${row('Сообщений с HTML/CSS', fmt(r.htmlCount), r.htmlCount ? 'ps-warn' : '')}
 ${row('Фигурных пробелов (U+2007)', fmt(r.figSp), r.figSp ? 'ps-warn' : '')}
-${row('Дубли больших блоков', esc(dupText), r.dups.length ? 'ps-warn' : '')}
+${row('NBSP / narrow NBSP / thin', `${fmt(r.specialSpaces.nbsp)} / ${fmt(r.specialSpaces.narrowNbsp)} / ${fmt(r.specialSpaces.thin)}`, (r.specialSpaces.nbsp + r.specialSpaces.narrowNbsp + r.specialSpaces.thin) ? 'ps-warn' : '')}
+${row('Zero-width / BOM', fmt(r.specialSpaces.zeroWidth), r.specialSpaces.zeroWidth ? 'ps-warn' : '')}
+${row('Дубли больших блоков (роль + точное содержимое)', esc(dupText), r.dups.length ? 'ps-warn' : '')}
 ${row('Tools (function calling)', `${fmt(r.tools)} шт · ${fmt(r.toolsChars)} симв`, r.tools ? 'ps-warn' : '')}
 ${row('Картинок', fmt(r.images))}
 </table>
@@ -367,7 +456,13 @@ async function openPopup(target = null) {
     const result = await popup.show();
     if (result === POPUP_RESULT.CUSTOM1) {
         const shown = currentReport ?? report;
-        downloadJson(shown.body, `payload-${shown.time.replace(/:/g, '')}-${shown.id}.json`);
+        downloadJson({
+            metadata: { id: shown.id, time: shown.time, model: shown.model, source: shown.source, requestUrl: shown.requestUrl, requestMethod: shown.requestMethod, payloadHash: shown.payloadHash, status: shown.status },
+            request: shown.body,
+            localEstimate: { stTextTokens: shown.stTokens, messageCount: shown.n, messageTextUnits: shown.totalChars, bodyUtf16Units: shown.bodyChars, bodyUtf8Bytes: shown.bodyBytes },
+            proxyUsage: shown.usage,
+            diagnostics: { duplicates: shown.dups, thinkCount: shown.thinkCount, htmlCount: shown.htmlCount, figureSpaces: shown.figSp, specialSpaces: shown.specialSpaces, tools: shown.tools, toolsChars: shown.toolsChars, images: shown.images },
+        }, `payload-${shown.time.replace(/:/g, '')}-${shown.id}.json`);
     }
 }
 
