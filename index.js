@@ -7,7 +7,7 @@
 const MODULE = 'payload_spy';
 const TAG = '[Payload Spy]';
 const GEN_URL = '/api/backends/chat-completions/generate';
-const HISTORY_MAX = 15;
+const HISTORY_MAX = 10;
 const DEFAULTS = Object.freeze({ enabled: true, toast: true });
 
 // Папка расширения берётся из URL, чтобы шаблон находился при любом имени репозитория.
@@ -19,10 +19,13 @@ const FOLDER = (() => {
     return 'third-party/payload-spy';
 })();
 
-/** @type {any} полный отчёт последнего запроса */
+/** @type {any} отчёт последнего запроса */
 let lastReport = null;
-/** @type {any[]} лёгкие записи по последним запросам */
+/** @type {any} отчёт, который сейчас открыт в попапе */
+let currentReport = null;
+/** @type {any[]} полные отчёты по последним запросам, новые первыми */
 const history = [];
+let seq = 0;
 
 /* ---------------- settings ---------------- */
 
@@ -119,7 +122,7 @@ function analyze(body, bodyChars) {
     const toolsChars = tools ? JSON.stringify(body.tools).length : 0;
 
     return {
-        id: Date.now(),
+        id: ++seq,
         time: new Date().toLocaleTimeString('ru-RU'),
         model: body.model ?? '?',
         source: body.chat_completion_source ?? '?',
@@ -201,16 +204,6 @@ async function finish(report, response) {
         console.debug(TAG, 'usage not read', e);
     }
 
-    history.unshift({
-        id: report.id,
-        time: report.time,
-        n: report.n,
-        totalChars: report.totalChars,
-        usage: report.usage,
-        status: report.status,
-    });
-    history.length = Math.min(history.length, HISTORY_MAX);
-
     notify(report);
 }
 
@@ -241,6 +234,8 @@ function installFetchSpy() {
             if (url.includes(GEN_URL) && typeof init?.body === 'string' && getSettings().enabled) {
                 report = analyze(JSON.parse(init.body), init.body.length);
                 lastReport = report;
+                history.unshift(report);
+                history.length = Math.min(history.length, HISTORY_MAX);
             }
         } catch (e) {
             console.warn(TAG, 'analyze failed, request goes through untouched', e);
@@ -286,7 +281,8 @@ function buildHtml(r) {
     const hist = history
         .map((h) => {
             const perChar = h.usage?.prompt != null && h.totalChars ? (h.usage.prompt / h.totalChars).toFixed(3) : '—';
-            return `<tr><td>${esc(h.time)}</td><td class="ps-num">${fmt(h.n)}</td><td class="ps-num">${fmt(h.totalChars)}</td><td class="ps-num">${fmt(h.usage?.prompt)}</td><td class="ps-num">${perChar}</td></tr>`;
+            const cur = h.id === r.id ? ' ps-current' : '';
+            return `<tr class="ps-row${cur}" data-ps-id="${h.id}"><td>${esc(h.time)}</td><td class="ps-num">${fmt(h.n)}</td><td class="ps-num">${fmt(h.totalChars)}</td><td class="ps-num">${fmt(h.usage?.prompt)}</td><td class="ps-num">${perChar}</td><td class="ps-num">${h.thinkCount}/${h.htmlCount}</td></tr>`;
         })
         .join('');
 
@@ -339,25 +335,26 @@ ${row('Картинок', fmt(r.images))}
 <h4>Остальные поля body</h4>
 <table>${keys}</table>
 
-<h4>История запросов</h4>
+<h4>История запросов <small>(тык по строке открывает тот запрос)</small></h4>
 <table>
-<tr><th>Время</th><th class="ps-num">Сообщ</th><th class="ps-num">Симв</th><th class="ps-num">Прокси</th><th class="ps-num">ток/симв</th></tr>
+<tr><th>Время</th><th class="ps-num">Сообщ</th><th class="ps-num">Симв</th><th class="ps-num">Прокси</th><th class="ps-num">ток/симв</th><th class="ps-num">think/html</th></tr>
 ${hist}
 </table>
 </div>`;
 }
 
-async function openPopup() {
-    if (!lastReport) {
+async function openPopup(target = null) {
+    const report = target ?? lastReport;
+    if (!report) {
         toastr.info('Ещё не было ни одной генерации', 'Payload Spy');
         return;
     }
     const { Popup, POPUP_TYPE, POPUP_RESULT } = SillyTavern.getContext();
-    const report = lastReport;
 
     if (report.stTokens === undefined) {
         report.stTokens = await countWithST(report);
     }
+    currentReport = report;
 
     const popup = new Popup(buildHtml(report), POPUP_TYPE.TEXT, '', {
         wide: true,
@@ -369,7 +366,8 @@ async function openPopup() {
 
     const result = await popup.show();
     if (result === POPUP_RESULT.CUSTOM1) {
-        downloadJson(report.body, `payload-${report.id}.json`);
+        const shown = currentReport ?? report;
+        downloadJson(shown.body, `payload-${shown.time.replace(/:/g, '')}-${shown.id}.json`);
     }
 }
 
@@ -397,9 +395,22 @@ async function initUI() {
         saveSettings();
     });
     $('#ps_open').on('click', () => openPopup());
+
+    // Тык по строке истории внутри попапа: подменяем содержимое на выбранный запрос.
+    $(document).on('click', '.ps-popup tr[data-ps-id]', async function () {
+        const id = Number(this.dataset.psId);
+        const report = history.find((h) => h.id === id);
+        if (!report) return;
+        if (report.stTokens === undefined) report.stTokens = await countWithST(report);
+        currentReport = report;
+        $('.ps-popup').replaceWith(buildHtml(report));
+        document.querySelector('.ps-popup')?.scrollIntoView?.({ block: 'start' });
+    });
+
     $('#ps_clear').on('click', () => {
         history.length = 0;
         lastReport = null;
+        currentReport = null;
         toastr.success('История очищена', 'Payload Spy');
     });
 }

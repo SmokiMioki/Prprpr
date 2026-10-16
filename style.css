@@ -101,3 +101,22 @@
         padding: 2px 4px;
     }
 }
+
+/* строки истории кликабельны */
+.ps-popup tr.ps-row {
+    cursor: pointer;
+}
+
+.ps-popup tr.ps-row:hover {
+    background: var(--black30a, rgba(0, 0, 0, 0.3));
+}
+
+.ps-popup tr.ps-current {
+    background: var(--black50a, rgba(0, 0, 0, 0.5));
+    outline: 1px solid var(--SmartThemeQuoteColor, var(--SmartThemeBorderColor));
+}
+
+.ps-popup h4 small {
+    opacity: 0.6;
+    font-weight: normal;
+}
