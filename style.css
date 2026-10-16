@@ -1,0 +1,103 @@
+/* Payload Spy: стили. Цвета берутся из темы таверны, так что подстраивается под любую. */
+
+.payload-spy-settings .ps-hint {
+    display: block;
+    opacity: 0.7;
+    margin: 4px 0 10px;
+    line-height: 1.35;
+}
+
+.payload-spy-settings .ps-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+/* ---------- popup ---------- */
+
+.ps-popup {
+    text-align: left;
+    font-size: 0.85em;
+    line-height: 1.4;
+    color: var(--SmartThemeBodyColor);
+}
+
+.ps-popup h4 {
+    margin: 14px 0 6px;
+    font-size: 1.05em;
+    color: var(--SmartThemeQuoteColor, var(--SmartThemeBodyColor));
+}
+
+.ps-popup .ps-head {
+    opacity: 0.75;
+    margin-bottom: 8px;
+    word-break: break-all;
+}
+
+.ps-popup table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 4px 0;
+}
+
+.ps-popup td,
+.ps-popup th {
+    padding: 3px 6px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    vertical-align: top;
+}
+
+.ps-popup th {
+    text-align: left;
+    font-weight: 600;
+    opacity: 0.8;
+}
+
+.ps-popup td.ps-val,
+.ps-popup th.ps-num,
+.ps-popup td.ps-num {
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.ps-popup .ps-warn {
+    color: #ff9d3c;
+    font-weight: 600;
+}
+
+.ps-popup .ps-ok {
+    color: #7bd88f;
+}
+
+.ps-popup .ps-verdict {
+    margin: 10px 0 2px;
+    padding: 8px 10px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    background: var(--black30a, rgba(0, 0, 0, 0.3));
+}
+
+.ps-popup .ps-mono {
+    font-family: var(--monoFontFamily, monospace);
+    word-break: break-all;
+}
+
+.ps-popup .ps-preview {
+    opacity: 0.65;
+    font-family: var(--monoFontFamily, monospace);
+    word-break: break-all;
+}
+
+/* на телефоне чуть компактнее */
+@media (max-width: 760px) {
+    .ps-popup {
+        font-size: 0.8em;
+    }
+
+    .ps-popup td,
+    .ps-popup th {
+        padding: 2px 4px;
+    }
+}

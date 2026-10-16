@@ -1,0 +1,12 @@
+{
+    "display_name": "Payload Spy",
+    "loading_order": 1,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Kent",
+    "version": "1.1.0",
+    "homePage": "",
+    "auto_update": true
+}
